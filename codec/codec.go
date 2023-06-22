@@ -17,7 +17,6 @@ type Codec interface {
 	Write(*Header, interface{}) error
 }
 
-// 定义了NewCodecFunc方法，输入为io.ReadWriteCloser 输出位Codec
 type NewCodecFunc func(io.ReadWriteCloser) Codec
 
 type Type string
