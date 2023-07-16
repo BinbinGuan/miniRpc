@@ -39,6 +39,7 @@ type debugService struct {
 
 // Runs at /debug/geerpc
 // debugHTTP 实现了 ServeHTTP 方法，可以作为 http.Handler 使用
+// func 后的
 func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Build a sorted version of the data.
 	var services []debugService
@@ -52,6 +53,7 @@ func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	})
 	err := debug.Execute(w, services)
 	if err != nil {
+		//_ 含义：忽略第一个返回值
 		_, _ = fmt.Fprintln(w, "rpc: error executing template:", err.Error())
 	}
 }
