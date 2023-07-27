@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"miniRpc"
+	"miniRpc/registry"
 	"miniRpc/xclient"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -14,6 +16,7 @@ type Foo int
 
 type Args struct{ Num1, Num2 int }
 
+// 下面代码解释 xclient/discovery_gee.go 中的 GeeRegistryDiscovery 的实现
 func (f Foo) Sum(args Args, reply *int) error {
 	*reply = args.Num1 + args.Num2
 	return nil
@@ -25,12 +28,20 @@ func (f Foo) Sleep(args Args, reply *int) error {
 	return nil
 }
 
-func startServer(addrCh chan string) {
+func startRegistry(wg *sync.WaitGroup) {
+	l, _ := net.Listen("tcp", ":9999") //
+	registry.HandleHTTP()
+	wg.Done()
+	_ = http.Serve(l, nil)
+}
+
+func startServer(registryAddr string, wg *sync.WaitGroup) {
 	var foo Foo
 	l, _ := net.Listen("tcp", ":0")
 	server := miniRpc.NewServer()
 	_ = server.Register(&foo)
-	addrCh <- l.Addr().String()
+	registry.Heartbeat(registryAddr, "tcp@"+l.Addr().String(), 0)
+	wg.Done()
 	server.Accept(l)
 }
 
@@ -38,9 +49,9 @@ func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, ar
 	var reply int
 	var err error
 	switch typ {
-	case "call":
+	case "call": // 调用
 		err = xc.Call(ctx, serviceMethod, args, &reply)
-	case "broadcast":
+	case "broadcast": // 广播
 		err = xc.Broadcast(ctx, serviceMethod, args, &reply)
 	}
 	if err != nil {
@@ -50,9 +61,9 @@ func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, ar
 	}
 }
 
-func call(addr1, addr2 string) {
-	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
-	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
+func call(registry string) {
+	d := xclient.NewGeeRegistryDiscovery(registry, 0)      // 0 表示不需要心跳
+	xc := xclient.NewXClient(d, xclient.RandomSelect, nil) // 随机选择
 	defer func() { _ = xc.Close() }()
 	// send request & receive response
 	var wg sync.WaitGroup
@@ -61,13 +72,13 @@ func call(addr1, addr2 string) {
 		go func(i int) {
 			defer wg.Done()
 			foo(xc, context.Background(), "call", "Foo.Sum", &Args{Num1: i, Num2: i * i})
-		}(i)
+		}(i) // 0 + 0 = 0
 	}
 	wg.Wait()
 }
 
-func broadcast(addr1, addr2 string) {
-	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+func broadcast(registry string) {
+	d := xclient.NewGeeRegistryDiscovery(registry, 0)
 	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() { _ = xc.Close() }()
 	var wg sync.WaitGroup
@@ -86,16 +97,19 @@ func broadcast(addr1, addr2 string) {
 
 func main() {
 	log.SetFlags(0)
-	ch1 := make(chan string)
-	ch2 := make(chan string)
-	// start two servers
-	go startServer(ch1)
-	go startServer(ch2)
-
-	addr1 := <-ch1 // wait for server1 to start
-	addr2 := <-ch2 // wait for server2 to start
+	registryAddr := "http://localhost:9999/_geerpc_/registry" // 注册中心地址
+	var wg sync.WaitGroup                                     // wait for registry & server
+	wg.Add(1)
+	go startRegistry(&wg) // start registry 启动注册中心
+	wg.Wait()
 
 	time.Sleep(time.Second)
-	call(addr1, addr2)
-	broadcast(addr1, addr2)
+	wg.Add(2)
+	go startServer(registryAddr, &wg) // start server1
+	go startServer(registryAddr, &wg) // start server2
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	call(registryAddr)      // call 启动客户端
+	broadcast(registryAddr) // broadcast
 }
